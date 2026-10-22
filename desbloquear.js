@@ -8,10 +8,19 @@ form.addEventListener('submit',async e=>{
  try{
   if(!crypto.subtle)throw Error('browser');
   const response=await fetch('contenido.bin',{cache:'no-store'});if(!response.ok)throw Error('network');
-  const bytes=new Uint8Array(await response.arrayBuffer());if(new TextDecoder().decode(bytes.slice(0,8))!=='BITAC01\n')throw Error('format');
+  const bytes=new Uint8Array(await response.arrayBuffer());if(new TextDecoder().decode(bytes.slice(0,8))!=='BITAC02\n')throw Error('format');
+  const size=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength).getUint32(8);
+  const header=JSON.parse(new TextDecoder().decode(bytes.slice(12,12+size)));
+  const aad=new TextEncoder().encode('avances-del-juego:v2');
   const material=await crypto.subtle.importKey('raw',new TextEncoder().encode(field.value),'PBKDF2',false,['deriveKey']);
-  const key=await crypto.subtle.deriveKey({name:'PBKDF2',salt:bytes.slice(8,24),iterations:600000,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['decrypt']);
-  let decrypted;try{decrypted=await crypto.subtle.decrypt({name:'AES-GCM',iv:bytes.slice(24,36),additionalData:new TextEncoder().encode('avances-del-juego:v1'),tagLength:128},key,bytes.slice(36));}catch{throw Error('password');}
+  let contentKey;
+  for(const slot of header.slots){try{
+   const wrappingKey=await crypto.subtle.deriveKey({name:'PBKDF2',salt:decode64(slot.salt),iterations:600000,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['decrypt']);
+   const raw=await crypto.subtle.decrypt({name:'AES-GCM',iv:decode64(slot.iv),additionalData:aad,tagLength:128},wrappingKey,decode64(slot.key));
+   contentKey=await crypto.subtle.importKey('raw',raw,'AES-GCM',false,['decrypt']);break;
+  }catch{}}
+  if(!contentKey)throw Error('password');
+  const decrypted=await crypto.subtle.decrypt({name:'AES-GCM',iv:decode64(header.iv),additionalData:aad,tagLength:128},contentKey,bytes.slice(12+size));
   const payload=JSON.parse(new TextDecoder().decode(decrypted));let html=payload.html,css=payload.css;
   for(const [name,asset] of Object.entries(payload.assets)){
    const url=URL.createObjectURL(new Blob([decode64(asset.data)],{type:asset.mime}));
